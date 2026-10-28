@@ -688,6 +688,16 @@ window.__ModuleLoader__.load({
       'probe.note': '深度解析支持 MP4/MOV；其他格式仍可通过播放器实测获得分辨率、帧率、丢帧等指标。',
       'probe.remote': '网络视频不做容器解析',
       'probe.unsupported': '该容器格式暂未提供深度解析',
+      'playlist.title': '播放列表',
+      'playlist.choose': '选择文件夹',
+      'playlist.change': '更换文件夹',
+      'playlist.empty': '文件夹中没有视频',
+      'playlist.show': '显示播放列表',
+      'playlist.hide': '隐藏播放列表',
+      'playlist.nowPlaying': '正在播放',
+      'empty.folderHint': '选择文件夹会把其中所有视频加入右侧播放列表',
+      'file.path': '相对路径',
+      'error.folderEmpty': '这个文件夹里没有可识别的视频文件',
       'error.notVideo': '请选择视频文件',
       'error.play': '无法播放这个视频',
       'error.url': '请输入有效的 HTTP(S) 地址',
@@ -790,6 +800,16 @@ window.__ModuleLoader__.load({
       'probe.note': 'Deep inspection covers MP4/MOV; other formats still expose measured resolution, frame rate and dropped frames.',
       'probe.remote': 'Container probing is skipped for remote video',
       'probe.unsupported': 'Deep container inspection is not available for this format',
+      'playlist.title': 'Playlist',
+      'playlist.choose': 'Choose folder',
+      'playlist.change': 'Change folder',
+      'playlist.empty': 'No videos in this folder',
+      'playlist.show': 'Show playlist',
+      'playlist.hide': 'Hide playlist',
+      'playlist.nowPlaying': 'Now playing',
+      'empty.folderHint': 'Choose a folder to add all its videos to the playlist on the right',
+      'file.path': 'Relative path',
+      'error.folderEmpty': 'No recognizable video files in this folder',
       'error.notVideo': 'Choose a video file',
       'error.play': 'This video cannot be played',
       'error.url': 'Enter a valid HTTP(S) address',
@@ -821,6 +841,35 @@ window.__ModuleLoader__.load({
       if (typeof navigator !== 'undefined' && /^zh/i.test(navigator.language || '')) return makeTranslator(ZH);
       return makeTranslator(EN);
     })();
+
+    const VIDEO_FILE_RE = /\.(mp4|m4v|mov|webm|ogv|ogg|mkv|avi|mpe?g|m2ts|mts|ts|3gp|3g2|wmv|flv|f4v|m2v|asf|rm|rmvb)$/i;
+
+    function isVideoFile(file) {
+      if (!file) return false;
+      const type = file.type || '';
+      return type.startsWith('video/') || VIDEO_FILE_RE.test(file.name || '');
+    }
+
+    function fileKey(file) {
+      if (!file) return '';
+      return `${file.webkitRelativePath || file.name || ''}|${file.size || 0}|${file.lastModified || 0}`;
+    }
+
+    function playlistItem(file) {
+      const path = file.webkitRelativePath || file.name || '';
+      return {
+        file,
+        key: fileKey(file),
+        name: file.name || path,
+        path,
+        size: file.size || 0,
+        type: file.type || ''
+      };
+    }
+
+    function comparePlaylistItems(left, right) {
+      return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' });
+    }
 
     const EMPTY_LIVE = {
       currentTime: 0,
@@ -985,6 +1034,12 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function ListIcon({ size = 16 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+        h('path', { d: 'M3 4.5h10M3 8h10M3 11.5h10', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' })
+      );
+    }
+
     function Row({ label, value, accent }) {
       const text = value === undefined || value === null || value === '' ? '—' : String(value);
       return h('div', { className: 'dsh-vp-row' },
@@ -1029,7 +1084,7 @@ window.__ModuleLoader__.load({
           try {
             sidebarRight.openTab(KIND);
           } catch (error) {
-            console.warn('[dsh-sidebar-video-player] openTab failed', error);
+            console.warn('[dsh-video-player] openTab failed', error);
           }
         }
       },
@@ -1046,6 +1101,7 @@ window.__ModuleLoader__.load({
       const containerRef = React.useRef(null);
       const videoRef = React.useRef(null);
       const fileRef = React.useRef(null);
+      const folderRef = React.useRef(null);
       const probeSeq = React.useRef(0);
       const fpsRef = React.useRef(0);
 
@@ -1061,6 +1117,9 @@ window.__ModuleLoader__.load({
       const [dropOver, setDropOver] = React.useState(false);
       const [error, setError] = React.useState(null);
       const [urlInput, setUrlInput] = React.useState('');
+      const [playlist, setPlaylist] = React.useState({ name: '', items: [] });
+      const [activeKey, setActiveKey] = React.useState('');
+      const [showPlaylist, setShowPlaylist] = React.useState(true);
 
       const replaceSource = React.useCallback((next) => {
         setSource(next);
@@ -1095,15 +1154,14 @@ window.__ModuleLoader__.load({
           });
       }, []);
 
-      const openFile = React.useCallback((file) => {
+      const loadFileSource = React.useCallback((file, options = {}) => {
         if (!file) return;
-        const name = file.name || '';
-        const type = file.type || '';
-        const looksVideo = type.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|ogg|mkv)$/i.test(name);
-        if (!looksVideo) {
+        if (!isVideoFile(file)) {
           setError(t('error.notVideo'));
           return;
         }
+        const name = file.name || '';
+        const type = file.type || '';
         const url = URL.createObjectURL(file);
         replaceSource({
           kind: 'file',
@@ -1112,12 +1170,16 @@ window.__ModuleLoader__.load({
           name,
           size: file.size || 0,
           type,
-          lastModified: file.lastModified || 0
+          lastModified: file.lastModified || 0,
+          path: file.webkitRelativePath || '',
+          autoplay: options.autoplay === true,
+          playlistKey: options.playlistKey || ''
         });
         setError(null);
         setMeta(null);
         setLive(EMPTY_LIVE);
         setScrub(null);
+        setActiveKey(options.playlistKey || '');
         fpsRef.current = 0;
         const mp4ish = /\.(mp4|m4v|mov)$/i.test(name) || /mp4|quicktime/i.test(type);
         if (mp4ish) {
@@ -1127,6 +1189,55 @@ window.__ModuleLoader__.load({
           setProbe({ status: 'skipped', reason: t('probe.unsupported') });
         }
       }, [replaceSource, startProbe, t]);
+
+      const openFile = React.useCallback((file) => {
+        if (!file) return;
+        const key = fileKey(file);
+        const match = playlist.items.find((item) => item.key === key);
+        loadFileSource(file, { autoplay: false, playlistKey: match ? match.key : '' });
+      }, [loadFileSource, playlist.items]);
+
+      const openFolder = React.useCallback((fileList) => {
+        const items = Array.from(fileList || [])
+          .filter(isVideoFile)
+          .map(playlistItem)
+          .sort(comparePlaylistItems);
+        const name = items.length > 0 ? (items[0].path.split('/')[0] || '') : '';
+        setPlaylist({ name, items });
+        setShowPlaylist(items.length > 0);
+        if (items.length === 0) {
+          setError(t('error.folderEmpty'));
+          return;
+        }
+        setError(null);
+        loadFileSource(items[0].file, { autoplay: false, playlistKey: items[0].key });
+      }, [loadFileSource, t]);
+
+      const openPlaylistItem = React.useCallback((item) => {
+        if (!item) return;
+        if (item.key === activeKey && source && source.playlistKey === item.key) {
+          const video = videoRef.current;
+          if (!video) return;
+          if (video.paused || video.ended) {
+            const promise = video.play();
+            if (promise && typeof promise.catch === 'function') {
+              promise.catch((reason) => setError(reason && reason.message ? reason.message : String(reason)));
+            }
+          } else {
+            video.pause();
+          }
+          return;
+        }
+        loadFileSource(item.file, { autoplay: true, playlistKey: item.key });
+      }, [activeKey, source, loadFileSource]);
+
+      const playNext = React.useCallback(() => {
+        if (!playlist.items.length || !activeKey) return;
+        const index = playlist.items.findIndex((item) => item.key === activeKey);
+        if (index < 0 || index + 1 >= playlist.items.length) return;
+        const next = playlist.items[index + 1];
+        loadFileSource(next.file, { autoplay: true, playlistKey: next.key });
+      }, [playlist.items, activeKey, loadFileSource]);
 
       const openUrl = React.useCallback((raw) => {
         const value = String(raw || '').trim();
@@ -1157,7 +1268,10 @@ window.__ModuleLoader__.load({
           name,
           size: 0,
           type: '',
-          lastModified: 0
+          lastModified: 0,
+          path: '',
+          autoplay: false,
+          playlistKey: ''
         });
         probeSeq.current += 1;
         setProbe({ status: 'skipped', reason: t('probe.remote') });
@@ -1165,6 +1279,7 @@ window.__ModuleLoader__.load({
         setMeta(null);
         setLive(EMPTY_LIVE);
         setScrub(null);
+        setActiveKey('');
         fpsRef.current = 0;
       }, [replaceSource, t]);
 
@@ -1417,7 +1532,16 @@ window.__ModuleLoader__.load({
       const rawJson = React.useMemo(() => {
         const snapshot = {
           source: source
-            ? { kind: source.kind, name: source.name, size: source.size, type: source.type, lastModified: source.lastModified }
+            ? {
+              kind: source.kind,
+              name: source.name,
+              size: source.size,
+              type: source.type,
+              lastModified: source.lastModified,
+              path: source.path,
+              playlistKey: source.playlistKey,
+              autoplay: source.autoplay
+            }
             : null,
           meta,
           probe: probe.status === 'done' ? probe.data : { status: probe.status, error: probe.error, reason: probe.reason }
@@ -1507,6 +1631,7 @@ window.__ModuleLoader__.load({
         fileRows.push(row(t('file.name'), source.name, true));
         fileRows.push(row(t('file.size'), source.size > 0 ? fmtBytes(source.size) : t('common.unknown')));
         fileRows.push(row(t('file.type'), source.type || t('common.unknown')));
+        if (source.path && source.path !== source.name) fileRows.push(row(t('file.path'), source.path));
         if (source.lastModified) fileRows.push(row(t('file.modified'), fmtDate(source.lastModified)));
         fileRows.push(row(t('file.source'), source.kind === 'file' ? t('file.local') : t('file.remote')));
       }
@@ -1525,9 +1650,28 @@ window.__ModuleLoader__.load({
           source
             ? h('button', {
               type: 'button',
+              className: 'dsh-vp-iconbtn',
+              title: t('playlist.choose'),
+              'aria-label': t('playlist.choose'),
+              onClick: () => { if (folderRef.current) folderRef.current.click(); }
+            }, h(FolderIcon, { size: 15 }))
+            : null,
+          playlist.items.length > 0
+            ? h('button', {
+              type: 'button',
+              className: 'dsh-vp-iconbtn',
+              title: showPlaylist ? t('playlist.hide') : t('playlist.show'),
+              'aria-label': showPlaylist ? t('playlist.hide') : t('playlist.show'),
+              'aria-pressed': showPlaylist,
+              onClick: () => setShowPlaylist((value) => !value)
+            }, h(ListIcon))
+            : null,
+          source
+            ? h('button', {
+              type: 'button',
               className: 'dsh-vp-btn',
               onClick: () => { if (fileRef.current) fileRef.current.click(); }
-            }, h(FolderIcon), t('action.replace'))
+            }, h(VideoGlyph, { size: 14 }), t('action.replace'))
             : null
         )
       );
@@ -1540,6 +1684,19 @@ window.__ModuleLoader__.load({
         onChange: (event) => {
           const file = event.target.files && event.target.files[0];
           if (file) openFile(file);
+          event.target.value = '';
+        }
+      });
+
+      const folderInput = h('input', {
+        ref: folderRef,
+        type: 'file',
+        webkitdirectory: '',
+        directory: '',
+        multiple: true,
+        style: { display: 'none' },
+        onChange: (event) => {
+          openFolder(event.target.files);
           event.target.value = '';
         }
       });
@@ -1557,17 +1714,26 @@ window.__ModuleLoader__.load({
         },
           header,
           fileInput,
+          folderInput,
           h('div', { className: 'dsh-vp-empty' },
             h('div', { className: 'dsh-vp-drop', 'data-over': dropOver ? 'true' : 'false' },
               h(VideoGlyph, { size: 38, className: 'dsh-vp-drop-icon' }),
               h('div', { className: 'dsh-vp-drop-title' }, t('empty.title')),
               h('div', { className: 'dsh-vp-drop-hint' }, t('empty.hint')),
-              h('button', {
-                type: 'button',
-                className: 'dsh-vp-btn dsh-vp-btn-cta',
-                onClick: () => { if (fileRef.current) fileRef.current.click(); }
-              }, h(FolderIcon), t('empty.choose'))
+              h('div', { className: 'dsh-vp-empty-actions' },
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-vp-btn dsh-vp-btn-cta',
+                  onClick: () => { if (fileRef.current) fileRef.current.click(); }
+                }, h(VideoGlyph, { size: 14 }), t('empty.choose')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-vp-btn',
+                  onClick: () => { if (folderRef.current) folderRef.current.click(); }
+                }, h(FolderIcon), t('playlist.choose'))
+              )
             ),
+            h('div', { className: 'dsh-vp-note' }, t('empty.folderHint')),
             h('form', {
               className: 'dsh-vp-url',
               onSubmit: (event) => {
@@ -1601,12 +1767,14 @@ window.__ModuleLoader__.load({
         ref: videoRef,
         className: 'dsh-vp-video',
         src: source.url,
+        autoPlay: source.autoplay === true,
         preload: 'metadata',
         playsInline: true,
         onClick: togglePlay,
         onLoadedMetadata,
         onDurationChange: onLoadedMetadata,
         onError: onVideoError,
+        onEnded: playNext,
         onPlay: () => setPaused(false),
         onPause: () => {
           fpsRef.current = 0;
@@ -1614,18 +1782,42 @@ window.__ModuleLoader__.load({
         }
       });
 
-      return h('div', {
-        className: 'dsh-vp-root',
-        ref: containerRef,
-        tabIndex: 0,
-        onKeyDown,
-        onDragOver,
-        onDragEnter: onDragOver,
-        onDragLeave,
-        onDrop
-      },
-        header,
-        fileInput,
+      const playlistPanel = playlist.items.length > 0
+        ? h('aside', { className: 'dsh-vp-playlist', 'aria-label': t('playlist.title') },
+          h('div', { className: 'dsh-vp-playlist-head' },
+            h('div', { className: 'dsh-vp-playlist-title', title: playlist.name || t('playlist.title') },
+              playlist.name || t('playlist.title')
+            ),
+            h('span', { className: 'dsh-vp-playlist-count' }, String(playlist.items.length)),
+            h('button', {
+              type: 'button',
+              className: 'dsh-vp-iconbtn',
+              title: t('playlist.change'),
+              'aria-label': t('playlist.change'),
+              onClick: () => { if (folderRef.current) folderRef.current.click(); }
+            }, h(FolderIcon, { size: 14 }))
+          ),
+          h('div', { className: 'dsh-vp-playlist-list' },
+            playlist.items.map((item, index) => h('button', {
+              key: item.key,
+              type: 'button',
+              className: 'dsh-vp-playlist-item' + (item.key === activeKey ? ' dsh-vp-playlist-item-active' : ''),
+              title: item.path,
+              'aria-current': item.key === activeKey ? 'true' : undefined,
+              onClick: () => openPlaylistItem(item)
+            },
+              h('span', { className: 'dsh-vp-playlist-index' }, String(index + 1).padStart(2, '0')),
+              h('span', { className: 'dsh-vp-playlist-text' },
+                h('span', { className: 'dsh-vp-playlist-name' }, item.name),
+                h('span', { className: 'dsh-vp-playlist-path' }, item.path),
+                h('span', { className: 'dsh-vp-playlist-size' }, fmtBytes(item.size))
+              )
+            ))
+          )
+        )
+        : null;
+
+      const mainColumn = h('div', { className: 'dsh-vp-main' },
         h('div', { className: 'dsh-vp-stage' },
           videoElement,
           paused && !live.ended
@@ -1725,6 +1917,25 @@ window.__ModuleLoader__.load({
           )
         )
       );
+
+      return h('div', {
+        className: 'dsh-vp-root',
+        ref: containerRef,
+        tabIndex: 0,
+        onKeyDown,
+        onDragOver,
+        onDragEnter: onDragOver,
+        onDragLeave,
+        onDrop
+      },
+        header,
+        fileInput,
+        folderInput,
+        h('div', { className: 'dsh-vp-body' },
+          mainColumn,
+          showPlaylist ? playlistPanel : null
+        )
+      );
     }
 
     const CSS = `
@@ -1733,6 +1944,24 @@ window.__ModuleLoader__.load({
 .dsh-vp-head-icon{color:var(--dsw-alias-brand-primary);flex:none}
 .dsh-vp-title{flex:1;min-width:0;font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-head-actions{display:flex;align-items:center;gap:4px;flex:none}
+.dsh-vp-body{display:flex;flex:1;min-height:0;min-width:0}
+.dsh-vp-main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+.dsh-vp-playlist{flex:0 0 clamp(136px,38%,220px);min-width:120px;display:flex;flex-direction:column;min-height:0;border-left:.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.dsh-vp-playlist-head{display:flex;align-items:center;gap:6px;padding:6px 6px 6px 9px;border-bottom:.5px solid var(--dsw-alias-border-l1);flex:none;min-width:0}
+.dsh-vp-playlist-title{flex:1;min-width:0;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-vp-playlist-count{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dsh-vp-playlist-list{flex:1;min-height:0;overflow:auto;padding:4px}
+.dsh-vp-playlist-item{display:flex;align-items:flex-start;gap:6px;width:100%;text-align:left;padding:6px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;min-width:0}
+.dsh-vp-playlist-item:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-vp-playlist-item-active{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.dsh-vp-playlist-item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.dsh-vp-playlist-index{flex:none;width:20px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:9.5px;color:var(--dsw-alias-label-secondary);padding-top:1px}
+.dsh-vp-playlist-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.dsh-vp-playlist-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-vp-playlist-path{font-size:9.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-vp-playlist-size{font-size:9.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dsh-vp-playlist-item-active .dsh-vp-playlist-name{color:var(--dsw-alias-brand-primary)}
+@media (max-width:420px){.dsh-vp-playlist{flex-basis:136px;min-width:112px}.dsh-vp-playlist-path{display:none}}
 .dsh-vp-stage{position:relative;flex:none;display:flex;align-items:center;justify-content:center;background:#000;aspect-ratio:16/9;max-height:44vh;min-height:110px;overflow:hidden}
 .dsh-vp-video{width:100%;height:100%;display:block;object-fit:contain;background:#000}
 .dsh-vp-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:0;background:rgba(0,0,0,.22);color:#fff;cursor:pointer;padding:0}
@@ -1770,6 +1999,7 @@ window.__ModuleLoader__.load({
 .dsh-vp-drop-icon{color:var(--dsw-alias-brand-primary)}
 .dsh-vp-drop-title{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600}
 .dsh-vp-drop-hint{font-size:11px;max-width:240px}
+.dsh-vp-empty-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
 .dsh-vp-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .dsh-vp-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
 .dsh-vp-btn:disabled{opacity:.5;cursor:default}
@@ -1788,6 +2018,7 @@ window.__ModuleLoader__.load({
 .dsh-vp-root:fullscreen{background:var(--dsw-alias-bg-base)}
 .dsh-vp-root:fullscreen .dsh-vp-stage{max-height:none;flex:1;aspect-ratio:auto;min-height:0}
 .dsh-vp-root:fullscreen .dsh-vp-stats{display:none}
+.dsh-vp-root:fullscreen .dsh-vp-playlist{display:none}
 @media (max-width:360px){.dsh-vp-label{width:70px}.dsh-vp-volume{display:none}}
 `;
 
@@ -1803,9 +2034,9 @@ window.__ModuleLoader__.load({
           style.textContent = CSS;
           document.head.appendChild(style);
           return () => style.remove();
-        }, 'dsh-sidebar-video-player: styles');
+        }, 'dsh-video-player: styles');
 
-        ctx.effect(() => ctx.locale.register(NS, { zh: ZH, en: EN }), 'dsh-sidebar-video-player: locale');
+        ctx.effect(() => ctx.locale.register(NS, { zh: ZH, en: EN }), 'dsh-video-player: locale');
 
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: TYPE_ID,
@@ -1820,7 +2051,7 @@ window.__ModuleLoader__.load({
             description: () => t('guide.description'),
             icon: VideoGlyph
           }]
-        }), 'dsh-sidebar-video-player: tab type');
+        }), 'dsh-video-player: tab type');
 
         ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
           name: 'sidebar.right.pane.tab',
