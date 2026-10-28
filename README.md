@@ -1,5 +1,7 @@
 # DSH Sidebar Video Player
 
+English | [简体中文](README.zh.md)
+
 A video player that lives in the **right Sidebar** of DeepSeek Harness (`dsh`), with live
 playback telemetry and a small, read-only MP4/MOV container reader.
 
