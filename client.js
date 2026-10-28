@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-sidebar-video-player';
     const TYPE_ID = 'dsh-sidebar-video-player';
-    const KIND = 'video-player';
+    const KIND = 'sidebar-video-player';
 
     // #region video-probe
     /**
