@@ -42,9 +42,11 @@ is session-scoped; the footer icon is disabled while no Session is on screen.
 
 - Play a local video by picker or drag-and-drop, or load an HTTP(S) video URL.
 - **Folder playlist**: choose a folder and every video inside it is listed in a column to
-  the right of the player, sorted by relative path. Each card shows a **first-frame
-  thumbnail** and a duration badge; click an item to switch. The active item is
-  highlighted, and the next item starts automatically when one ends.
+  the right of the player. Each card shows a **first-frame thumbnail** and a duration
+  badge; click an item to switch. The active item is highlighted, and the next item starts
+  automatically when one ends.
+- **Sorting**: order the playlist by name, duration, modified time or size, ascending or
+  descending.
 - Custom transport: play/pause, seek, volume, mute, playback rate, picture-in-picture,
   fullscreen.
 - Keyboard shortcuts while the player has focus: `Space` / `K`, `J` / `L`, arrow keys,
