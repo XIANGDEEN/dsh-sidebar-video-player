@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Sidebar Video Player",
+    "description": "Plays local or remote video in the right Sidebar and reports resolution, frame rate, bitrate, buffer health, dropped frames, and MP4/MOV container details."
+  }
+}

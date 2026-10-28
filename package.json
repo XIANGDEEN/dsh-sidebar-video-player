@@ -1,0 +1,61 @@
+{
+  "name": "dsh-sidebar-video-player",
+  "version": "1.0.0",
+  "description": "A right-Sidebar video player for DeepSeek Harness with live playback telemetry and deep MP4/MOV container inspection.",
+  "type": "module",
+  "license": "MIT",
+  "author": "XIANGDEEN",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XIANGDEEN/dsh-sidebar-video-player.git"
+  },
+  "homepage": "https://github.com/XIANGDEEN/dsh-sidebar-video-player#readme",
+  "bugs": {
+    "url": "https://github.com/XIANGDEEN/dsh-sidebar-video-player/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "video",
+    "player",
+    "sidebar",
+    "mp4",
+    "mov",
+    "telemetry"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.3 <0.3.0-0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}
