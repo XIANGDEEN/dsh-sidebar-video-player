@@ -975,6 +975,16 @@ window.__ModuleLoader__.load({
       return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
     }
 
+    function fmtBadgeTime(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) return '';
+      const total = Math.floor(seconds);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      const pad = (value) => String(value).padStart(2, '0');
+      return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${pad(minutes)}:${pad(secs)}`;
+    }
+
     function fmtInt(value) {
       if (!Number.isFinite(value)) return '—';
       return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -1928,7 +1938,7 @@ window.__ModuleLoader__.load({
                     })
                     : h('span', { className: 'dsh-vp-playlist-thumb-placeholder' }, h(VideoGlyph, { size: 18 })),
                   captured && captured.duration
-                    ? h('span', { className: 'dsh-vp-playlist-duration' }, fmtTime(captured.duration))
+                    ? h('span', { className: 'dsh-vp-playlist-duration' }, fmtBadgeTime(captured.duration))
                     : null,
                   item.key === activeKey
                     ? h('span', { className: 'dsh-vp-playlist-badge' }, t('playlist.nowPlaying'))
