@@ -95,7 +95,7 @@ plugin.apply(ctx);
 
 assert.equal(definitions.length, 1);
 assert.equal(definitions[0].id, 'dsh-sidebar-video-player');
-assert.equal(definitions[0].kind, 'video-player');
+assert.equal(definitions[0].kind, 'sidebar-video-player');
 assert.equal(definitions[0].priority, 'extension');
 assert.equal(definitions[0].keepMounted, true);
 assert.equal(definitions[0].guide.length, 1);
