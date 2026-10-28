@@ -138,7 +138,7 @@ assert.ok(folderInput, 'the empty state must expose a folder input');
 assert.ok(findAll(firstTree, (node) => node.props && node.props.className === 'dsh-vp-empty-actions').length === 1);
 
 const files = [
-  { name: 'b.webm', type: 'video/webm', size: 20, lastModified: 2, webkitRelativePath: 'clips/b.webm' },
+  { name: 'b.webm', type: 'video/webm', size: 5, lastModified: 2, webkitRelativePath: 'clips/b.webm' },
   { name: 'a.webm', type: 'video/webm', size: 10, lastModified: 1, webkitRelativePath: 'clips/a.webm' },
   { name: 'note.txt', type: 'text/plain', size: 1, lastModified: 0, webkitRelativePath: 'clips/note.txt' }
 ];
@@ -151,7 +151,7 @@ const items = findAll(playlistTree, (node) => node.props && String(node.props.cl
 assert.equal(items.length, 2, 'only video files enter the playlist');
 const names = findAll(playlistTree, (node) => node.props && node.props.className === 'dsh-vp-playlist-name')
   .map((node) => node.props.children);
-assert.deepEqual(names, ['a.webm', 'b.webm'], 'playlist is sorted by relative path');
+assert.deepEqual(names, ['a.webm', 'b.webm'], 'default sort is name ascending');
 assert.ok(String(items[0].props.className).includes('dsh-vp-playlist-item-active'));
 assert.equal(findAll(playlistTree, (node) => node.props && node.props.className === 'dsh-vp-playlist-count')[0].props.children, '2');
 
@@ -168,4 +168,20 @@ const activeItems = findAll(switchedTree, (node) => node.props && String(node.pr
 assert.equal(activeItems.length, 1);
 assert.ok(String(activeItems[0].props.className).includes('dsh-vp-playlist-item-active'));
 
-console.log('playlist folder selection and switching passed');
+const sortSelect = findAll(playlistTree, (node) => node.type === 'select' && node.props && node.props['aria-label'] === 'sort.label')[0];
+assert.ok(sortSelect, 'the playlist must expose a sort selector');
+sortSelect.props.onChange({ target: { value: 'size' } });
+const sizeTree = render();
+const sizeNames = findAll(sizeTree, (node) => node.props && node.props.className === 'dsh-vp-playlist-name')
+  .map((node) => node.props.children);
+assert.deepEqual(sizeNames, ['b.webm', 'a.webm'], 'size ascending orders 5 before 10');
+
+const direction = findAll(sizeTree, (node) => node.props && String(node.props.className || '').includes('dsh-vp-sort-direction'))[0];
+assert.ok(direction, 'the playlist must expose a direction toggle');
+direction.props.onClick();
+const descTree = render();
+const descNames = findAll(descTree, (node) => node.props && node.props.className === 'dsh-vp-playlist-name')
+  .map((node) => node.props.children);
+assert.deepEqual(descNames, ['a.webm', 'b.webm'], 'size descending reverses the order');
+
+console.log('playlist folder selection, switching and sorting passed');
