@@ -871,6 +871,81 @@ window.__ModuleLoader__.load({
       return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' });
     }
 
+    // #region video-thumbnail
+    function waitForMediaEvent(target, eventName, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        let timer = null;
+        const cleanup = () => {
+          if (timer !== null) clearTimeout(timer);
+          target.removeEventListener(eventName, onEvent);
+          target.removeEventListener('error', onError);
+        };
+        const onEvent = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = () => {
+          cleanup();
+          reject(new Error('media error'));
+        };
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('media timeout'));
+        }, timeoutMs);
+        target.addEventListener(eventName, onEvent, { once: true });
+        target.addEventListener('error', onError, { once: true });
+      });
+    }
+
+    async function captureVideoThumbnail(file) {
+      if (typeof document === 'undefined') throw new Error('no document');
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.preload = 'auto';
+      video.muted = true;
+      video.playsInline = true;
+      try {
+        video.src = url;
+        await waitForMediaEvent(video, 'loadeddata', 8000);
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const target = duration > 0 ? Math.min(0.2, duration * 0.1) : 0;
+        if (target > 0) {
+          try {
+            video.currentTime = target;
+            await waitForMediaEvent(video, 'seeked', 4000);
+          } catch (seekError) {
+            /* draw the frame the browser already decoded */
+          }
+        }
+        const width = 160;
+        const height = 90;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('no 2d context');
+        const sourceWidth = video.videoWidth || width;
+        const sourceHeight = video.videoHeight || height;
+        const scale = Math.max(width / sourceWidth, height / sourceHeight);
+        const drawWidth = sourceWidth * scale;
+        const drawHeight = sourceHeight * scale;
+        context.drawImage(
+          video,
+          (width - drawWidth) / 2,
+          (height - drawHeight) / 2,
+          drawWidth,
+          drawHeight
+        );
+        return { thumbnail: canvas.toDataURL('image/jpeg', 0.72), duration };
+      } finally {
+        try { video.pause(); } catch (pauseError) { /* ignore */ }
+        video.removeAttribute('src');
+        try { video.load(); } catch (loadError) { /* ignore */ }
+        URL.revokeObjectURL(url);
+      }
+    }
+    // #endregion
+
     const EMPTY_LIVE = {
       currentTime: 0,
       duration: 0,
@@ -1120,6 +1195,9 @@ window.__ModuleLoader__.load({
       const [playlist, setPlaylist] = React.useState({ name: '', items: [] });
       const [activeKey, setActiveKey] = React.useState('');
       const [showPlaylist, setShowPlaylist] = React.useState(true);
+      const [thumbs, setThumbs] = React.useState({});
+      const thumbRef = React.useRef({});
+      const thumbGeneration = React.useRef(0);
 
       const replaceSource = React.useCallback((next) => {
         setSource(next);
@@ -1138,6 +1216,36 @@ window.__ModuleLoader__.load({
         const video = videoRef.current;
         if (video && !visible && !video.paused) video.pause();
       }, [visible]);
+
+      React.useEffect(() => {
+        if (!playlist.items.length) return undefined;
+        const generation = thumbGeneration.current + 1;
+        thumbGeneration.current = generation;
+        let cancelled = false;
+        let cursor = 0;
+        const worker = async () => {
+          while (!cancelled) {
+            const index = cursor;
+            cursor += 1;
+            if (index >= playlist.items.length) return;
+            const item = playlist.items[index];
+            if (thumbRef.current[item.key]) continue;
+            try {
+              const captured = await captureVideoThumbnail(item.file);
+              if (cancelled || generation !== thumbGeneration.current) return;
+              thumbRef.current[item.key] = captured;
+              setThumbs((previous) => ({ ...previous, [item.key]: captured }));
+            } catch (error) {
+              if (cancelled || generation !== thumbGeneration.current) return;
+              thumbRef.current[item.key] = { failed: true };
+            }
+          }
+        };
+        void Promise.all([worker(), worker()]);
+        return () => {
+          cancelled = true;
+        };
+      }, [playlist.items]);
 
       const startProbe = React.useCallback((file) => {
         const seq = probeSeq.current + 1;
@@ -1203,6 +1311,8 @@ window.__ModuleLoader__.load({
           .map(playlistItem)
           .sort(comparePlaylistItems);
         const name = items.length > 0 ? (items[0].path.split('/')[0] || '') : '';
+        thumbRef.current = {};
+        setThumbs({});
         setPlaylist({ name, items });
         setShowPlaylist(items.length > 0);
         if (items.length === 0) {
@@ -1798,21 +1908,39 @@ window.__ModuleLoader__.load({
             }, h(FolderIcon, { size: 14 }))
           ),
           h('div', { className: 'dsh-vp-playlist-list' },
-            playlist.items.map((item, index) => h('button', {
-              key: item.key,
-              type: 'button',
-              className: 'dsh-vp-playlist-item' + (item.key === activeKey ? ' dsh-vp-playlist-item-active' : ''),
-              title: item.path,
-              'aria-current': item.key === activeKey ? 'true' : undefined,
-              onClick: () => openPlaylistItem(item)
-            },
-              h('span', { className: 'dsh-vp-playlist-index' }, String(index + 1).padStart(2, '0')),
-              h('span', { className: 'dsh-vp-playlist-text' },
-                h('span', { className: 'dsh-vp-playlist-name' }, item.name),
-                h('span', { className: 'dsh-vp-playlist-path' }, item.path),
-                h('span', { className: 'dsh-vp-playlist-size' }, fmtBytes(item.size))
-              )
-            ))
+            playlist.items.map((item, index) => {
+              const captured = thumbs[item.key];
+              return h('button', {
+                key: item.key,
+                type: 'button',
+                className: 'dsh-vp-playlist-item' + (item.key === activeKey ? ' dsh-vp-playlist-item-active' : ''),
+                title: item.path,
+                'aria-current': item.key === activeKey ? 'true' : undefined,
+                onClick: () => openPlaylistItem(item)
+              },
+                h('span', { className: 'dsh-vp-playlist-thumb' },
+                  captured && captured.thumbnail
+                    ? h('img', {
+                      src: captured.thumbnail,
+                      alt: '',
+                      loading: 'lazy',
+                      draggable: false
+                    })
+                    : h('span', { className: 'dsh-vp-playlist-thumb-placeholder' }, h(VideoGlyph, { size: 18 })),
+                  captured && captured.duration
+                    ? h('span', { className: 'dsh-vp-playlist-duration' }, fmtTime(captured.duration))
+                    : null,
+                  item.key === activeKey
+                    ? h('span', { className: 'dsh-vp-playlist-badge' }, t('playlist.nowPlaying'))
+                    : h('span', { className: 'dsh-vp-playlist-index' }, String(index + 1).padStart(2, '0'))
+                ),
+                h('span', { className: 'dsh-vp-playlist-text' },
+                  h('span', { className: 'dsh-vp-playlist-name' }, item.name),
+                  h('span', { className: 'dsh-vp-playlist-path' }, item.path),
+                  h('span', { className: 'dsh-vp-playlist-size' }, fmtBytes(item.size))
+                )
+              );
+            })
           )
         )
         : null;
@@ -1951,12 +2079,18 @@ window.__ModuleLoader__.load({
 .dsh-vp-playlist-title{flex:1;min-width:0;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-playlist-count{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 .dsh-vp-playlist-list{flex:1;min-height:0;overflow:auto;padding:4px}
-.dsh-vp-playlist-item{display:flex;align-items:flex-start;gap:6px;width:100%;text-align:left;padding:6px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;min-width:0}
+.dsh-vp-playlist-item{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;padding:4px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;min-width:0}
 .dsh-vp-playlist-item:hover{background:var(--dsw-alias-bg-layer-2)}
-.dsh-vp-playlist-item-active{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.dsh-vp-playlist-item-active{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary)}
 .dsh-vp-playlist-item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.dsh-vp-playlist-index{flex:none;width:20px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:9.5px;color:var(--dsw-alias-label-secondary);padding-top:1px}
-.dsh-vp-playlist-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.dsh-vp-playlist-thumb{position:relative;display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}
+.dsh-vp-playlist-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.dsh-vp-playlist-thumb-placeholder{display:flex;color:var(--dsw-alias-label-secondary)}
+.dsh-vp-playlist-index,.dsh-vp-playlist-badge{position:absolute;left:4px;top:4px;padding:0 4px;border-radius:3px;font-size:9px;line-height:14px;max-width:calc(100% - 8px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-vp-playlist-index{background:rgba(0,0,0,.58);color:#fff;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dsh-vp-playlist-badge{background:var(--dsw-alias-brand-primary);color:#fff}
+.dsh-vp-playlist-duration{position:absolute;right:4px;bottom:4px;padding:0 3px;border-radius:3px;background:rgba(0,0,0,.7);color:#fff;font-size:9px;line-height:14px;font-variant-numeric:tabular-nums}
+.dsh-vp-playlist-text{display:flex;flex-direction:column;gap:1px;min-width:0;padding:0 2px}
 .dsh-vp-playlist-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-playlist-path{font-size:9.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-playlist-size{font-size:9.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
