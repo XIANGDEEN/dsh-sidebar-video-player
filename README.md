@@ -49,6 +49,13 @@ is session-scoped; the footer icon is disabled while no Session is on screen.
   automatically when one ends.
 - **Sorting**: order the playlist by name, duration, modified time or size, ascending or
   descending.
+- **Fullscreen**: a header control and the existing transport button both toggle the player
+  fullscreen; `F` does the same. Fullscreen hides the stats and playlist and keeps the
+  transport controls.
+- **Playlist context menu**: right-click a card for Rename, Copy file, Copy relative path,
+  Delete local file and Refresh. File actions use the browser File System Access API and
+  require choosing the folder through the directory picker with write access; the read-only
+  folder-input fallback disables them.
 - Custom transport: play/pause, seek, volume, mute, playback rate, picture-in-picture,
   fullscreen.
 - Keyboard shortcuts while the player has focus: `Space` / `K`, `J` / `L`, arrow keys,
@@ -90,12 +97,20 @@ metrics from the `<video>` element.
 - Requires DSH `>=0.2.1-rc.3 <0.3.0-0`; built and tested against the Web client.
 - Requires a browser that can decode the chosen container/codec. MP4/H.264/AAC is the
   safest choice; HEVC/AV1 support depends on the browser.
-- The player is a view surface. It registers no agent tool, writes no Session events,
-  and requests no file-system authority from the Host.
+- The player is a view surface for playback and inspection. It registers no agent tool and
+  writes no Session events. File writes use the browser File System Access API only after
+  you choose a folder with write permission; the plugin does not request Host file-system
+  authority.
+- File operations (rename/copy/delete) require a Chromium-based browser or Electron and a
+  folder chosen through the directory picker. The fallback `<input webkitdirectory>` path
+  is read-only, so its context-menu file actions are disabled.
 
 ## Permissions and privacy
 
 - A selected local file is read through a browser Blob URL; it is not uploaded.
+- Choosing a folder with write access lets the browser rename, copy or delete files in
+  that folder when you pick a context-menu action. Nothing is written without an explicit
+  action and the browser's permission prompt.
 - A remote URL is fetched by the browser only for playback. The plugin does not proxy
   remote media or read remote container metadata.
 - No analytics, telemetry, external service, or credentials are used.
@@ -115,6 +130,10 @@ Those values match the `ffprobe` stream metadata for the same files. The plugin 
 passes module-factory, manifest/locale/patch, and registration contract checks in the
 source repository.
 
+The file-operation helpers (copy naming, rename fallback, delete wiring and directory
+enumeration) are covered by tests. Actual permission prompts and filesystem writes require
+a Chromium/Electron environment and are not exercised by the automated suite.
+
 No screenshot is declared. The player is a view surface; adding a staged screenshot that
 the code does not produce would be worse than an empty card. The numeric evidence above
 is reproducible from the reader.
@@ -127,6 +146,12 @@ is reproducible from the reader.
 - Encrypted sample entries (`encv`/`enca`) are not decrypted or inspected.
 - The per-track bitrate is an average over the track, not a live network bitrate.
 - The right Sidebar is session-scoped; there is no player without an open Session.
+- File operations require Chromium/Electron and a folder chosen with write permission; the
+  fallback folder input is read-only.
+- Copy duplicates the file inside the same folder; it is not a system clipboard file copy.
+- There is no "Reveal in Explorer" action; the browser sandbox does not expose the OS file
+  manager.
+- Delete and rename change the local file immediately after confirmation; there is no undo.
 
 ## License
 
