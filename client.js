@@ -702,6 +702,19 @@ window.__ModuleLoader__.load({
       'sort.size': '大小',
       'sort.asc': '升序',
       'sort.desc': '降序',
+      'menu.rename': '重命名',
+      'menu.copy': '复制文件',
+      'menu.copySuffix': '副本',
+      'menu.copyPath': '复制相对路径',
+      'menu.delete': '删除本地文件',
+      'menu.refresh': '刷新列表',
+      'menu.permission': '当前文件夹没有写权限。请用“选择文件夹”重新选择并允许写入。',
+      'menu.renamePrompt': '输入新的文件名',
+      'menu.deleteConfirm': '确定删除这个文件？这会直接删除本地文件，无法撤销。',
+      'menu.exists': '同名文件已存在',
+      'menu.invalidName': '文件名不能包含路径分隔符',
+      'menu.failed': '文件操作失败：',
+      'menu.busy': '处理中…',
       'empty.folderHint': '选择文件夹会把其中所有视频加入右侧播放列表',
       'file.path': '相对路径',
       'error.folderEmpty': '这个文件夹里没有可识别的视频文件',
@@ -821,6 +834,19 @@ window.__ModuleLoader__.load({
       'sort.size': 'Size',
       'sort.asc': 'Ascending',
       'sort.desc': 'Descending',
+      'menu.rename': 'Rename',
+      'menu.copy': 'Copy file',
+      'menu.copySuffix': 'copy',
+      'menu.copyPath': 'Copy relative path',
+      'menu.delete': 'Delete local file',
+      'menu.refresh': 'Refresh list',
+      'menu.permission': 'This folder is read-only. Choose it again with "Choose folder" and allow write access.',
+      'menu.renamePrompt': 'New file name',
+      'menu.deleteConfirm': 'Delete this file? This deletes the local file and cannot be undone.',
+      'menu.exists': 'A file with that name already exists',
+      'menu.invalidName': 'File names cannot contain path separators',
+      'menu.failed': 'File operation failed: ',
+      'menu.busy': 'Working…',
       'empty.folderHint': 'Choose a folder to add all its videos to the playlist on the right',
       'file.path': 'Relative path',
       'error.folderEmpty': 'No recognizable video files in this folder',
@@ -864,20 +890,23 @@ window.__ModuleLoader__.load({
       return type.startsWith('video/') || VIDEO_FILE_RE.test(file.name || '');
     }
 
-    function fileKey(file) {
+    function fileKey(file, pathOverride) {
       if (!file) return '';
-      return `${file.webkitRelativePath || file.name || ''}|${file.size || 0}|${file.lastModified || 0}`;
+      const path = pathOverride || file.webkitRelativePath || file.name || '';
+      return `${path}|${file.size || 0}|${file.lastModified || 0}`;
     }
 
-    function playlistItem(file) {
-      const path = file.webkitRelativePath || file.name || '';
+    function playlistItem(file, handle, parentHandle, pathOverride) {
+      const path = pathOverride || file.webkitRelativePath || file.name || '';
       return {
         file,
-        key: fileKey(file),
+        key: fileKey(file, path),
         name: file.name || path,
         path,
         size: file.size || 0,
-        type: file.type || ''
+        type: file.type || '',
+        handle: handle || null,
+        parentHandle: parentHandle || null
       };
     }
 
@@ -915,6 +944,93 @@ window.__ModuleLoader__.load({
         return result * factor;
       });
     }
+
+    // #region file-ops
+    async function fileExists(directory, name) {
+      try {
+        await directory.getFileHandle(name);
+        return true;
+      } catch (error) {
+        if (error && error.name === 'NotFoundError') return false;
+        throw error;
+      }
+    }
+
+    function splitFileName(name) {
+      const dot = name.lastIndexOf('.');
+      return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+    }
+
+    function parentPathOf(path) {
+      const index = path.lastIndexOf('/');
+      return index >= 0 ? path.slice(0, index + 1) : '';
+    }
+
+    async function writeFileToWritable(file, writable) {
+      if (typeof file.stream === 'function') {
+        await file.stream().pipeTo(writable);
+        return;
+      }
+      await writable.write(await file.arrayBuffer());
+      await writable.close();
+    }
+
+    async function copyVideoFile(item, suffix) {
+      const [base, extension] = splitFileName(item.name);
+      let candidate = `${base} (${suffix || 'copy'})${extension}`;
+      let index = 2;
+      while (await fileExists(item.parentHandle, candidate)) {
+        candidate = `${base} (${suffix || 'copy'} ${index})${extension}`;
+        index += 1;
+      }
+      const target = await item.parentHandle.getFileHandle(candidate, { create: true });
+      const writable = await target.createWritable();
+      await writeFileToWritable(item.file, writable);
+      return candidate;
+    }
+
+    async function renameVideoFile(item, newName) {
+      if (typeof item.handle.move === 'function') {
+        try {
+          await item.handle.move(newName);
+          return;
+        } catch (error) {
+          if (!error || (error.name !== 'NotSupportedError' && error.name !== 'TypeError')) throw error;
+        }
+      }
+      const target = await item.parentHandle.getFileHandle(newName, { create: true });
+      const writable = await target.createWritable();
+      await writeFileToWritable(item.file, writable);
+      await item.parentHandle.removeEntry(item.name);
+    }
+
+    async function enumerateVideoHandles(rootHandle) {
+      if (!rootHandle || typeof rootHandle.values !== 'function') {
+        throw new Error('directory handles are unavailable');
+      }
+      const items = [];
+      const walk = async (directory, prefix, depth) => {
+        if (depth > 12) return;
+        for await (const entry of directory.values()) {
+          if (entry.kind === 'file') {
+            let file;
+            try {
+              file = await entry.getFile();
+            } catch (error) {
+              continue;
+            }
+            if (!isVideoFile(file)) continue;
+            const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+            items.push(playlistItem(file, entry, directory, path));
+          } else if (entry.kind === 'directory') {
+            await walk(entry, prefix ? `${prefix}/${entry.name}` : entry.name, depth + 1);
+          }
+        }
+      };
+      await walk(rootHandle, '', 0);
+      return items.sort(comparePlaylistItems);
+    }
+    // #endregion
 
     // #region video-thumbnail
     function waitForMediaEvent(target, eventName, timeoutMs) {
@@ -1232,6 +1348,7 @@ window.__ModuleLoader__.load({
       const videoRef = React.useRef(null);
       const fileRef = React.useRef(null);
       const folderRef = React.useRef(null);
+      const rootHandleRef = React.useRef(null);
       const probeSeq = React.useRef(0);
       const fpsRef = React.useRef(0);
 
@@ -1253,6 +1370,9 @@ window.__ModuleLoader__.load({
       const [sortKey, setSortKey] = React.useState('name');
       const [sortDirection, setSortDirection] = React.useState('asc');
       const [thumbs, setThumbs] = React.useState({});
+      const [contextMenu, setContextMenu] = React.useState(null);
+      const [fileBusy, setFileBusy] = React.useState(false);
+      const [isFullscreen, setIsFullscreen] = React.useState(false);
       const thumbRef = React.useRef({});
       const thumbGeneration = React.useRef(0);
 
@@ -1273,6 +1393,30 @@ window.__ModuleLoader__.load({
         const video = videoRef.current;
         if (video && !visible && !video.paused) video.pause();
       }, [visible]);
+
+      React.useEffect(() => {
+        const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement || document.webkitFullscreenElement));
+        document.addEventListener('fullscreenchange', onChange);
+        document.addEventListener('webkitfullscreenchange', onChange);
+        return () => {
+          document.removeEventListener('fullscreenchange', onChange);
+          document.removeEventListener('webkitfullscreenchange', onChange);
+        };
+      }, []);
+
+      React.useEffect(() => {
+        if (!contextMenu) return undefined;
+        const close = () => setContextMenu(null);
+        const onKey = (event) => {
+          if (event.key === 'Escape') close();
+        };
+        document.addEventListener('pointerdown', close);
+        document.addEventListener('keydown', onKey);
+        return () => {
+          document.removeEventListener('pointerdown', close);
+          document.removeEventListener('keydown', onKey);
+        };
+      }, [contextMenu]);
 
       React.useEffect(() => {
         if (!playlist.items.length) return undefined;
@@ -1341,7 +1485,7 @@ window.__ModuleLoader__.load({
           size: file.size || 0,
           type,
           lastModified: file.lastModified || 0,
-          path: file.webkitRelativePath || '',
+          path: options.path || file.webkitRelativePath || '',
           autoplay: options.autoplay === true,
           playlistKey: options.playlistKey || ''
         });
@@ -1368,9 +1512,10 @@ window.__ModuleLoader__.load({
       }, [loadFileSource, playlist.items]);
 
       const openFolder = React.useCallback((fileList) => {
+        rootHandleRef.current = null;
         const items = Array.from(fileList || [])
           .filter(isVideoFile)
-          .map(playlistItem)
+          .map((file) => playlistItem(file))
           .sort(comparePlaylistItems);
         const name = items.length > 0 ? (items[0].path.split('/')[0] || '') : '';
         thumbRef.current = {};
@@ -1383,7 +1528,7 @@ window.__ModuleLoader__.load({
         }
         setError(null);
         const ordered = sortPlaylistItems(items, sortKey, sortDirection, {});
-        loadFileSource(ordered[0].file, { autoplay: false, playlistKey: ordered[0].key });
+        loadFileSource(ordered[0].file, { autoplay: false, playlistKey: ordered[0].key, path: ordered[0].path });
       }, [loadFileSource, sortDirection, sortKey, t]);
 
       const openPlaylistItem = React.useCallback((item) => {
@@ -1401,7 +1546,7 @@ window.__ModuleLoader__.load({
           }
           return;
         }
-        loadFileSource(item.file, { autoplay: true, playlistKey: item.key });
+        loadFileSource(item.file, { autoplay: true, playlistKey: item.key, path: item.path });
       }, [activeKey, source, loadFileSource]);
 
       const playNext = React.useCallback(() => {
@@ -1409,8 +1554,156 @@ window.__ModuleLoader__.load({
         const index = sortedItems.findIndex((item) => item.key === activeKey);
         if (index < 0 || index + 1 >= sortedItems.length) return;
         const next = sortedItems[index + 1];
-        loadFileSource(next.file, { autoplay: true, playlistKey: next.key });
+        loadFileSource(next.file, { autoplay: true, playlistKey: next.key, path: next.path });
       }, [sortedItems, activeKey, loadFileSource]);
+
+      const openDirectory = React.useCallback(async () => {
+        if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') {
+          if (folderRef.current) folderRef.current.click();
+          return;
+        }
+        try {
+          let handle;
+          try {
+            handle = await window.showDirectoryPicker({ id: 'dsh-sidebar-video-player', mode: 'readwrite' });
+          } catch (error) {
+            if (error && error.name === 'TypeError') {
+              handle = await window.showDirectoryPicker({ id: 'dsh-sidebar-video-player' });
+            } else {
+              throw error;
+            }
+          }
+          if (typeof handle.queryPermission === 'function' && typeof handle.requestPermission === 'function') {
+            let permission = await handle.queryPermission({ mode: 'readwrite' });
+            if (permission === 'prompt') permission = await handle.requestPermission({ mode: 'readwrite' });
+            if (permission !== 'granted') throw new Error(t('menu.permission'));
+          }
+          const items = await enumerateVideoHandles(handle);
+          rootHandleRef.current = handle;
+          thumbRef.current = {};
+          setThumbs({});
+          setContextMenu(null);
+          setPlaylist({ name: handle.name || '', items });
+          setShowPlaylist(items.length > 0);
+          if (items.length === 0) {
+            setError(t('error.folderEmpty'));
+            return;
+          }
+          setError(null);
+          const ordered = sortPlaylistItems(items, sortKey, sortDirection, {});
+          loadFileSource(ordered[0].file, { autoplay: false, playlistKey: ordered[0].key, path: ordered[0].path });
+        } catch (error) {
+          if (error && error.name === 'AbortError') return;
+          setError(`${t('menu.permission')}${error && error.message ? ` ${error.message}` : ''}`);
+        }
+      }, [loadFileSource, sortDirection, sortKey, t]);
+
+      const refreshDirectory = React.useCallback(async (options = {}) => {
+        const root = rootHandleRef.current;
+        if (!root) return;
+        const items = await enumerateVideoHandles(root);
+        const allowed = new Set(items.map((item) => item.key));
+        const nextThumbs = {};
+        for (const [key, value] of Object.entries(thumbRef.current)) {
+          if (allowed.has(key)) nextThumbs[key] = value;
+        }
+        thumbRef.current = nextThumbs;
+        setThumbs(nextThumbs);
+        setContextMenu(null);
+        setPlaylist({ name: root.name || '', items });
+        setShowPlaylist(items.length > 0);
+        if (items.length === 0) {
+          replaceSource(null);
+          setActiveKey('');
+          setProbe({ status: 'idle' });
+          setMeta(null);
+          setLive(EMPTY_LIVE);
+          return;
+        }
+        const currentPath = source && source.kind === 'file' ? source.path : '';
+        const targetPath = options.preferredPath || currentPath;
+        const target = targetPath ? items.find((item) => item.path === targetPath) : null;
+        if (target) {
+          if (source && source.kind === 'file' && source.path === target.path && source.playlistKey === target.key) {
+            setActiveKey(target.key);
+          } else {
+            loadFileSource(target.file, { autoplay: false, playlistKey: target.key, path: target.path });
+          }
+        } else {
+          const ordered = sortPlaylistItems(items, sortKey, sortDirection, nextThumbs);
+          loadFileSource(ordered[0].file, { autoplay: false, playlistKey: ordered[0].key, path: ordered[0].path });
+        }
+      }, [source, sortDirection, sortKey, loadFileSource, replaceSource]);
+
+      const openContextMenu = React.useCallback((event, item) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const aside = event.currentTarget.closest('.dsh-vp-playlist');
+        const rect = aside ? aside.getBoundingClientRect() : null;
+        const top = rect
+          ? Math.max(4, Math.min(event.clientY - rect.top, Math.max(4, rect.height - 214)))
+          : 4;
+        setContextMenu({ item, top });
+      }, []);
+
+      const runFileAction = React.useCallback(async (action) => {
+        const menu = contextMenu;
+        if (!menu) return;
+        const item = menu.item;
+        setContextMenu(null);
+        if (action === 'copyPath') {
+          try {
+            await navigator.clipboard.writeText(item.path);
+          } catch (error) {
+            setError(`${t('menu.failed')}${error && error.message ? error.message : String(error)}`);
+          }
+          return;
+        }
+        if (action === 'refresh') {
+          if (!rootHandleRef.current) {
+            setError(t('menu.permission'));
+            return;
+          }
+          setFileBusy(true);
+          try {
+            await refreshDirectory();
+            setError(null);
+          } catch (error) {
+            setError(`${t('menu.failed')}${error && error.message ? error.message : String(error)}`);
+          } finally {
+            setFileBusy(false);
+          }
+          return;
+        }
+        if (!item.handle || !item.parentHandle) {
+          setError(t('menu.permission'));
+          return;
+        }
+        setFileBusy(true);
+        try {
+          if (action === 'delete') {
+            const confirmed = window.confirm(`${t('menu.deleteConfirm')}\n${item.name}`);
+            if (!confirmed) return;
+            await item.parentHandle.removeEntry(item.name);
+            await refreshDirectory();
+          } else if (action === 'copy') {
+            await copyVideoFile(item, t('menu.copySuffix'));
+            await refreshDirectory();
+          } else if (action === 'rename') {
+            const nextName = window.prompt(t('menu.renamePrompt'), item.name);
+            if (!nextName || nextName === item.name) return;
+            if (nextName.includes('/') || nextName.includes('\\')) throw new Error(t('menu.invalidName'));
+            if (await fileExists(item.parentHandle, nextName)) throw new Error(t('menu.exists'));
+            await renameVideoFile(item, nextName);
+            await refreshDirectory({ preferredPath: `${parentPathOf(item.path)}${nextName}` });
+          }
+          setError(null);
+        } catch (error) {
+          setError(`${t('menu.failed')}${error && error.message ? error.message : String(error)}`);
+        } finally {
+          setFileBusy(false);
+        }
+      }, [contextMenu, refreshDirectory, t]);
 
       const openUrl = React.useCallback((raw) => {
         const value = String(raw || '').trim();
@@ -1526,10 +1819,21 @@ window.__ModuleLoader__.load({
       const toggleFullscreen = React.useCallback(() => {
         const element = containerRef.current;
         if (!element) return;
-        if (document.fullscreenElement) {
-          if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
-        } else if (element.requestFullscreen) {
-          element.requestFullscreen().catch((reason) => setError(reason && reason.message ? reason.message : String(reason)));
+        const fullscreenElement = document.fullscreenElement || document.webkitFullscreenElement;
+        if (fullscreenElement) {
+          const exit = document.exitFullscreen || document.webkitExitFullscreen;
+          if (exit) {
+            const result = exit.call(document);
+            if (result && typeof result.catch === 'function') result.catch(() => {});
+          }
+          return;
+        }
+        const request = element.requestFullscreen || element.webkitRequestFullscreen;
+        if (request) {
+          const result = request.call(element);
+          if (result && typeof result.catch === 'function') {
+            result.catch((reason) => setError(reason && reason.message ? reason.message : String(reason)));
+          }
         }
       }, []);
 
@@ -1824,9 +2128,18 @@ window.__ModuleLoader__.load({
             ? h('button', {
               type: 'button',
               className: 'dsh-vp-iconbtn',
+              title: isFullscreen ? t('control.exitFullscreen') : t('control.fullscreen'),
+              'aria-label': isFullscreen ? t('control.exitFullscreen') : t('control.fullscreen'),
+              onClick: toggleFullscreen
+            }, h(FullscreenIcon, { exit: isFullscreen }))
+            : null,
+          source
+            ? h('button', {
+              type: 'button',
+              className: 'dsh-vp-iconbtn',
               title: t('playlist.choose'),
               'aria-label': t('playlist.choose'),
-              onClick: () => { if (folderRef.current) folderRef.current.click(); }
+              onClick: () => { void openDirectory(); }
             }, h(FolderIcon, { size: 15 }))
             : null,
           playlist.items.length > 0
@@ -1902,7 +2215,7 @@ window.__ModuleLoader__.load({
                 h('button', {
                   type: 'button',
                   className: 'dsh-vp-btn',
-                  onClick: () => { if (folderRef.current) folderRef.current.click(); }
+                  onClick: () => { void openDirectory(); }
                 }, h(FolderIcon), t('playlist.choose'))
               )
             ),
@@ -1967,7 +2280,7 @@ window.__ModuleLoader__.load({
               className: 'dsh-vp-iconbtn',
               title: t('playlist.change'),
               'aria-label': t('playlist.change'),
-              onClick: () => { if (folderRef.current) folderRef.current.click(); }
+              onClick: () => { void openDirectory(); }
             }, h(FolderIcon, { size: 14 }))
           ),
           h('div', { className: 'dsh-vp-playlist-sort' },
@@ -2002,7 +2315,8 @@ window.__ModuleLoader__.load({
                 className: 'dsh-vp-playlist-item' + (item.key === activeKey ? ' dsh-vp-playlist-item-active' : ''),
                 title: item.path,
                 'aria-current': item.key === activeKey ? 'true' : undefined,
-                onClick: () => openPlaylistItem(item)
+                onClick: () => openPlaylistItem(item),
+                onContextMenu: (event) => openContextMenu(event, item)
               },
                 h('span', { className: 'dsh-vp-playlist-thumb' },
                   captured && captured.thumbnail
@@ -2027,7 +2341,58 @@ window.__ModuleLoader__.load({
                 )
               );
             })
-          )
+          ),
+          contextMenu
+            ? h('div', {
+              className: 'dsh-vp-menu',
+              style: { top: `${contextMenu.top}px` },
+              role: 'menu',
+              onPointerDown: (event) => event.stopPropagation(),
+              onContextMenu: (event) => event.preventDefault()
+            },
+              h('div', { className: 'dsh-vp-menu-head', title: contextMenu.item.path }, contextMenu.item.name),
+              !contextMenu.item.handle
+                ? h('div', { className: 'dsh-vp-menu-note' }, t('menu.permission'))
+                : null,
+              fileBusy ? h('div', { className: 'dsh-vp-menu-note' }, t('menu.busy')) : null,
+              h('button', {
+                type: 'button',
+                role: 'menuitem',
+                className: 'dsh-vp-menu-item',
+                disabled: fileBusy || !contextMenu.item.handle,
+                onClick: () => { void runFileAction('rename'); }
+              }, t('menu.rename')),
+              h('button', {
+                type: 'button',
+                role: 'menuitem',
+                className: 'dsh-vp-menu-item',
+                disabled: fileBusy || !contextMenu.item.handle,
+                onClick: () => { void runFileAction('copy'); }
+              }, t('menu.copy')),
+              h('button', {
+                type: 'button',
+                role: 'menuitem',
+                className: 'dsh-vp-menu-item',
+                disabled: fileBusy,
+                onClick: () => { void runFileAction('copyPath'); }
+              }, t('menu.copyPath')),
+              h('div', { className: 'dsh-vp-menu-sep' }),
+              h('button', {
+                type: 'button',
+                role: 'menuitem',
+                className: 'dsh-vp-menu-item dsh-vp-menu-item-danger',
+                disabled: fileBusy || !contextMenu.item.handle,
+                onClick: () => { void runFileAction('delete'); }
+              }, t('menu.delete')),
+              h('button', {
+                type: 'button',
+                role: 'menuitem',
+                className: 'dsh-vp-menu-item',
+                disabled: fileBusy || !rootHandleRef.current,
+                onClick: () => { void runFileAction('refresh'); }
+              }, t('menu.refresh'))
+            )
+            : null
         )
         : null;
 
@@ -2112,9 +2477,9 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'dsh-vp-iconbtn',
               onClick: toggleFullscreen,
-              title: t('control.fullscreen'),
-              'aria-label': t('control.fullscreen')
-            }, h(FullscreenIcon))
+              title: isFullscreen ? t('control.exitFullscreen') : t('control.fullscreen'),
+              'aria-label': isFullscreen ? t('control.exitFullscreen') : t('control.fullscreen')
+            }, h(FullscreenIcon, { exit: isFullscreen }))
           )
         ),
         error ? h('div', { className: 'dsh-vp-error', role: 'alert' }, error) : null,
@@ -2160,7 +2525,7 @@ window.__ModuleLoader__.load({
 .dsh-vp-head-actions{display:flex;align-items:center;gap:4px;flex:none}
 .dsh-vp-body{display:flex;flex:1;min-height:0;min-width:0}
 .dsh-vp-main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
-.dsh-vp-playlist{flex:0 0 clamp(136px,38%,220px);min-width:120px;display:flex;flex-direction:column;min-height:0;border-left:.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.dsh-vp-playlist{position:relative;flex:0 0 clamp(136px,38%,220px);min-width:120px;display:flex;flex-direction:column;min-height:0;border-left:.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .dsh-vp-playlist-head{display:flex;align-items:center;gap:6px;padding:6px 6px 6px 9px;border-bottom:.5px solid var(--dsw-alias-border-l1);flex:none;min-width:0}
 .dsh-vp-playlist-title{flex:1;min-width:0;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-playlist-count{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
@@ -2168,6 +2533,15 @@ window.__ModuleLoader__.load({
 .dsh-vp-sort-select{flex:1;min-width:0;height:26px;font-size:12px;font-weight:600;padding:0 6px}
 .dsh-vp-sort-direction{width:26px;height:26px;font-size:15px;font-weight:600;line-height:1}
 .dsh-vp-playlist-list{flex:1;min-height:0;overflow:auto;padding:4px}
+.dsh-vp-menu{position:absolute;left:4px;right:4px;z-index:30;display:flex;flex-direction:column;padding:4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 8px 24px rgba(0,0,0,.35);max-height:calc(100% - 8px);overflow:auto}
+.dsh-vp-menu-head{padding:5px 7px;font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:.5px solid var(--dsw-alias-border-l1);margin-bottom:3px}
+.dsh-vp-menu-note{padding:5px 7px;font-size:10.5px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+.dsh-vp-menu-item{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;padding:7px 8px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-vp-menu-item:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
+.dsh-vp-menu-item:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.dsh-vp-menu-item:disabled{opacity:.45;cursor:default}
+.dsh-vp-menu-item-danger{color:var(--dsw-alias-state-error-primary)}
+.dsh-vp-menu-sep{height:.5px;background:var(--dsw-alias-border-l1);margin:3px 0}
 .dsh-vp-playlist-item{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;padding:4px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;min-width:0}
 .dsh-vp-playlist-item:hover{background:var(--dsw-alias-bg-layer-2)}
 .dsh-vp-playlist-item-active{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary)}
