@@ -695,6 +695,13 @@ window.__ModuleLoader__.load({
       'playlist.show': '显示播放列表',
       'playlist.hide': '隐藏播放列表',
       'playlist.nowPlaying': '正在播放',
+      'sort.label': '排序',
+      'sort.name': '名称',
+      'sort.duration': '时长',
+      'sort.modified': '修改时间',
+      'sort.size': '大小',
+      'sort.asc': '升序',
+      'sort.desc': '降序',
       'empty.folderHint': '选择文件夹会把其中所有视频加入右侧播放列表',
       'file.path': '相对路径',
       'error.folderEmpty': '这个文件夹里没有可识别的视频文件',
@@ -807,6 +814,13 @@ window.__ModuleLoader__.load({
       'playlist.show': 'Show playlist',
       'playlist.hide': 'Hide playlist',
       'playlist.nowPlaying': 'Now playing',
+      'sort.label': 'Sort',
+      'sort.name': 'Name',
+      'sort.duration': 'Duration',
+      'sort.modified': 'Modified',
+      'sort.size': 'Size',
+      'sort.asc': 'Ascending',
+      'sort.desc': 'Descending',
       'empty.folderHint': 'Choose a folder to add all its videos to the playlist on the right',
       'file.path': 'Relative path',
       'error.folderEmpty': 'No recognizable video files in this folder',
@@ -869,6 +883,37 @@ window.__ModuleLoader__.load({
 
     function comparePlaylistItems(left, right) {
       return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    function comparePlaylistNames(left, right) {
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    function sortPlaylistItems(items, key, direction, thumbnails) {
+      const factor = direction === 'desc' ? -1 : 1;
+      const known = thumbnails || {};
+      return [...items].sort((left, right) => {
+        let result = 0;
+        if (key === 'duration') {
+          const leftDuration = known[left.key] && Number.isFinite(known[left.key].duration)
+            ? known[left.key].duration
+            : Number.POSITIVE_INFINITY;
+          const rightDuration = known[right.key] && Number.isFinite(known[right.key].duration)
+            ? known[right.key].duration
+            : Number.POSITIVE_INFINITY;
+          result = leftDuration - rightDuration;
+        } else if (key === 'modified') {
+          result = (left.file.lastModified || 0) - (right.file.lastModified || 0);
+        } else if (key === 'size') {
+          result = (left.size || 0) - (right.size || 0);
+        } else {
+          result = comparePlaylistNames(left, right);
+        }
+        if (Number.isNaN(result)) result = 0;
+        else result = result < 0 ? -1 : result > 0 ? 1 : 0;
+        if (result === 0) result = comparePlaylistItems(left, right);
+        return result * factor;
+      });
     }
 
     // #region video-thumbnail
@@ -1205,6 +1250,8 @@ window.__ModuleLoader__.load({
       const [playlist, setPlaylist] = React.useState({ name: '', items: [] });
       const [activeKey, setActiveKey] = React.useState('');
       const [showPlaylist, setShowPlaylist] = React.useState(true);
+      const [sortKey, setSortKey] = React.useState('name');
+      const [sortDirection, setSortDirection] = React.useState('asc');
       const [thumbs, setThumbs] = React.useState({});
       const thumbRef = React.useRef({});
       const thumbGeneration = React.useRef(0);
@@ -1256,6 +1303,11 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [playlist.items]);
+
+      const sortedItems = React.useMemo(
+        () => sortPlaylistItems(playlist.items, sortKey, sortDirection, thumbs),
+        [playlist.items, sortKey, sortDirection, thumbs]
+      );
 
       const startProbe = React.useCallback((file) => {
         const seq = probeSeq.current + 1;
@@ -1330,8 +1382,9 @@ window.__ModuleLoader__.load({
           return;
         }
         setError(null);
-        loadFileSource(items[0].file, { autoplay: false, playlistKey: items[0].key });
-      }, [loadFileSource, t]);
+        const ordered = sortPlaylistItems(items, sortKey, sortDirection, {});
+        loadFileSource(ordered[0].file, { autoplay: false, playlistKey: ordered[0].key });
+      }, [loadFileSource, sortDirection, sortKey, t]);
 
       const openPlaylistItem = React.useCallback((item) => {
         if (!item) return;
@@ -1352,12 +1405,12 @@ window.__ModuleLoader__.load({
       }, [activeKey, source, loadFileSource]);
 
       const playNext = React.useCallback(() => {
-        if (!playlist.items.length || !activeKey) return;
-        const index = playlist.items.findIndex((item) => item.key === activeKey);
-        if (index < 0 || index + 1 >= playlist.items.length) return;
-        const next = playlist.items[index + 1];
+        if (!sortedItems.length || !activeKey) return;
+        const index = sortedItems.findIndex((item) => item.key === activeKey);
+        if (index < 0 || index + 1 >= sortedItems.length) return;
+        const next = sortedItems[index + 1];
         loadFileSource(next.file, { autoplay: true, playlistKey: next.key });
-      }, [playlist.items, activeKey, loadFileSource]);
+      }, [sortedItems, activeKey, loadFileSource]);
 
       const openUrl = React.useCallback((raw) => {
         const value = String(raw || '').trim();
@@ -1917,8 +1970,31 @@ window.__ModuleLoader__.load({
               onClick: () => { if (folderRef.current) folderRef.current.click(); }
             }, h(FolderIcon, { size: 14 }))
           ),
+          h('div', { className: 'dsh-vp-playlist-sort' },
+            h('select', {
+              className: 'dsh-vp-select dsh-vp-sort-select',
+              value: sortKey,
+              'aria-label': t('sort.label'),
+              title: t('sort.label'),
+              onChange: (event) => setSortKey(event.target.value)
+            },
+              [
+                ['name', t('sort.name')],
+                ['duration', t('sort.duration')],
+                ['modified', t('sort.modified')],
+                ['size', t('sort.size')]
+              ].map(([value, label]) => h('option', { key: value, value }, label))
+            ),
+            h('button', {
+              type: 'button',
+              className: 'dsh-vp-iconbtn dsh-vp-sort-direction',
+              title: sortDirection === 'asc' ? t('sort.desc') : t('sort.asc'),
+              'aria-label': sortDirection === 'asc' ? t('sort.desc') : t('sort.asc'),
+              onClick: () => setSortDirection((value) => (value === 'asc' ? 'desc' : 'asc'))
+            }, sortDirection === 'asc' ? '↑' : '↓')
+          ),
           h('div', { className: 'dsh-vp-playlist-list' },
-            playlist.items.map((item, index) => {
+            sortedItems.map((item, index) => {
               const captured = thumbs[item.key];
               return h('button', {
                 key: item.key,
@@ -2088,6 +2164,9 @@ window.__ModuleLoader__.load({
 .dsh-vp-playlist-head{display:flex;align-items:center;gap:6px;padding:6px 6px 6px 9px;border-bottom:.5px solid var(--dsw-alias-border-l1);flex:none;min-width:0}
 .dsh-vp-playlist-title{flex:1;min-width:0;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsh-vp-playlist-count{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dsh-vp-playlist-sort{display:flex;align-items:center;gap:3px;padding:4px 6px 4px 9px;border-bottom:.5px solid var(--dsw-alias-border-l1);flex:none}
+.dsh-vp-sort-select{flex:1;min-width:0;height:22px;font-size:10px}
+.dsh-vp-sort-direction{width:22px;height:22px;font-size:13px;line-height:1}
 .dsh-vp-playlist-list{flex:1;min-height:0;overflow:auto;padding:4px}
 .dsh-vp-playlist-item{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;padding:4px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;min-width:0}
 .dsh-vp-playlist-item:hover{background:var(--dsw-alias-bg-layer-2)}
